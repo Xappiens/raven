@@ -1,8 +1,8 @@
 import * as React from "react";
 import useGetChannel from "../../hooks/useGetChannel";
-import ChannelIcon from "../common/ChannelIcon";
-import Avatar from "../common/Avatar";
 import useGetUser from "../../hooks/useGetUser";
+import Avatar from "../common/Avatar";
+import ChannelIcon from "../common/ChannelIcon";
 /**
  * Header will have the following:
  * - Logo
@@ -29,7 +29,7 @@ const Header = ({
                 alignItems: 'center',
                 gap: '0.2rem',
             }}>
-                <span role='button' className="raven-logo cal-sans" onClick={toggle}>raven</span>
+                <span role='button' className="raven-logo cal-sans" onClick={toggle}>atu AI</span>
 
                 <a href='/raven' target='_blank' className='btn btn-xs open-raven-button' style={{
                     lineHeight: '1.4rem',

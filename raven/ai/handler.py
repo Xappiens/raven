@@ -43,10 +43,10 @@ def stream_response(ai_thread_id: str, bot, channel_id: str):
 				for tool in details.tool_calls:
 					if tool.type == "code_interpreter":
 						self.publish_event("Running code...")
-					if tool.type == "file_search":
-						self.publish_event("Searching file contents...")
-			else:
-				self.publish_event("Raven AI is thinking...")
+				if tool.type == "file_search":
+					self.publish_event("Searching file contents...")
+		else:
+			self.publish_event("atu AI está pensando...")
 
 		@override
 		def on_text_done(self, text: Text):
@@ -348,7 +348,7 @@ def stream_response(ai_thread_id: str, bot, channel_id: str):
 				tool_outputs=tool_outputs,
 				event_handler=EventHandler(),
 			) as stream:
-				self.publish_event("Raven AI is thinking...")
+				self.publish_event("atu AI está pensando...")
 				for text in stream.text_deltas:
 					print(text, end="", flush=True)
 				print()

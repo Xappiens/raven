@@ -1,13 +1,13 @@
 import { UserContext } from "@/utils/auth/UserProvider"
 import { DMChannelListItem, UnreadCountData, useChannelList, useUpdateLastMessageInChannelList } from "@/utils/channel/ChannelListProvider"
-import { useFrappeGetCall, FrappeContext, FrappeConfig, useFrappeEventListener } from "frappe-react-sdk"
+import { FrappeConfig, FrappeContext, useFrappeEventListener, useFrappeGetCall } from "frappe-react-sdk"
 import { useContext, useEffect } from "react"
-import { useParams, useLocation } from "react-router-dom"
+import { useLocation, useParams } from "react-router-dom"
 
 /**
  * Hook to read the unread message count for all channels
  * This only fetches the unread message count for all channels once
- * @returns 
+ * @returns
  */
 const useUnreadMessageCount = () => {
 
@@ -176,7 +176,7 @@ export const useFetchUnreadMessageCount = () => {
 
     useEffect(() => {
         // @ts-expect-error
-        let app_name = window.app_name || "Raven"
+        let app_name = window.app_name || "atu AI"
 
         if (channelID) {
             const channel = channels.find(c => c.name === channelID)

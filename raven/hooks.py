@@ -7,8 +7,8 @@ app_description = "Messaging Application"
 app_email = "support@thecommit.company"
 app_license = "AGPLv3"
 source_link = "https://github.com/The-Commit-Company/Raven"
-app_logo = "/assets/raven/raven-logo.png"
-app_logo_url = "/assets/raven/raven-logo.png"
+# app_logo = "/assets/raven/raven-logo.png"
+# app_logo_url = "/assets/raven/raven-logo.png"
 
 # Includes in <head>
 # ------------------
@@ -23,7 +23,7 @@ add_to_apps_screen = [
 	{
 		"name": "raven",
 		"logo": "/assets/raven/raven-logo.png",
-		"title": "Raven",
+		"title": "atu AI",
 		"route": "/raven",
 		"has_permission": "raven.permissions.check_app_permission",
 	}
