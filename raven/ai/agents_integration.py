@@ -10,6 +10,9 @@ import traceback
 import frappe
 import openai
 
+# Import file type definitions
+from raven.ai.openai_client import code_interpreter_file_types, file_search_file_types, get_open_ai_client
+
 # Import agents SDK - the package is called 'agents' not 'openai_agents'
 from agents import (
 	Agent,
@@ -38,6 +41,55 @@ from .functions import (
 	submit_document,
 	update_document,
 )
+
+
+def create_openai_attachments_for_file(file_info):
+	"""
+	Create proper OpenAI attachments based on file type, similar to get_content_attachment_for_file.
+	This ensures the agent can properly access and process the uploaded files.
+	"""
+	attachments = []
+	file_name = file_info.get("file_name", "")
+	file_id = file_info.get("file_id")
+	file_type = file_info.get("file_type", "File")
+
+	if not file_id:
+		return attachments
+
+	# Get file extension
+	file_extension = file_name.split(".")[-1].lower() if "." in file_name else ""
+
+	# For Files (not Images), check what tools to attach based on extension
+	if file_type == "File":
+		# Add code_interpreter tool if file type supports it
+		if file_extension in code_interpreter_file_types:
+			attachments.append({
+				"file_id": file_id,
+				"tools": [{"type": "code_interpreter"}]
+			})
+
+		# Add file_search tool if file type supports it
+		if file_extension in file_search_file_types:
+			attachments.append({
+				"file_id": file_id,
+				"tools": [{"type": "file_search"}]
+			})
+
+		# If no specific tools match, add both as fallback
+		if not attachments:
+			attachments.append({
+				"file_id": file_id,
+				"tools": [{"type": "code_interpreter"}, {"type": "file_search"}]
+			})
+
+	else:  # Images
+		# Images typically use code_interpreter for analysis
+		attachments.append({
+			"file_id": file_id,
+			"tools": [{"type": "code_interpreter"}]
+		})
+
+	return attachments
 
 
 class RavenAgentManager:
@@ -448,7 +500,7 @@ IMPORTANT: When calling tools, the SDK will handle the tool execution automatica
 
 # Async handler function that can be called from sync context
 async def handle_ai_request_async(
-	bot, message: str, channel_id: str, conversation_history: list = None, file_handler=None
+	bot, message: str, channel_id: str, conversation_history: list = None, file_handler=None, uploaded_files=None
 ):
 	"""Handle AI request asynchronously"""
 	try:
@@ -510,8 +562,50 @@ async def handle_ai_request_async(
 			# Add current message
 			current_msg = {"role": "user", "content": message}
 
-			# Add file context if present
-			if has_files_in_conversation:
+			# Add OpenAI file attachments if present
+			if uploaded_files:
+				# Add file attachments for OpenAI using proper file type logic
+				attachments = []
+				for file_info in uploaded_files:
+					file_attachments = create_openai_attachments_for_file(file_info)
+					attachments.extend(file_attachments)
+
+				current_msg["attachments"] = attachments
+
+				# Update message content to mention the files are available
+				file_names = [f["file_name"] for f in uploaded_files]
+
+				# Try to extract content from files and include it in the message
+				file_contents = []
+				for file_info in uploaded_files:
+					try:
+						# Get file content using OpenAI API
+						client = get_open_ai_client()
+
+						file_content = client.files.content(file_info["file_id"])
+						content_bytes = file_content.read()
+
+						# Try to decode as text for text files
+						file_extension = file_info["file_name"].split(".")[-1].lower()
+						if file_extension in ["txt", "md", "json", "csv"]:
+							try:
+								content_text = content_bytes.decode('utf-8')
+								file_contents.append(f"Content of {file_info['file_name']}:\n{content_text[:2000]}{'...' if len(content_text) > 2000 else ''}")
+							except:
+								file_contents.append(f"File {file_info['file_name']} uploaded (binary content)")
+						else:
+							file_contents.append(f"File {file_info['file_name']} uploaded and available for analysis")
+					except Exception as e:
+						frappe.log_error(f"Error extracting file content: {str(e)}", "File Content Extraction")
+						file_contents.append(f"File {file_info['file_name']} uploaded")
+
+				if file_contents:
+					current_msg["content"] = f"{message}\n\n" + "\n\n".join(file_contents)
+				else:
+					current_msg["content"] = f"{message}\n\n[The files {', '.join(file_names)} have been uploaded and are available for analysis.]"
+
+			# Add file context if present (for local analysis tool)
+			elif has_files_in_conversation:
 				files = list(manager.file_handler.conversation_files.values())
 				if len(files) == 1:
 					file_name = files[0]["file_name"]
@@ -528,7 +622,54 @@ async def handle_ai_request_async(
 			full_input = input_items
 		else:
 			# No history, just the current message
-			if has_files_in_conversation:
+			current_msg = {"role": "user", "content": message}
+
+			# Add OpenAI file attachments if present
+			if uploaded_files:
+				# Add file attachments for OpenAI using proper file type logic
+				attachments = []
+				for file_info in uploaded_files:
+					file_attachments = create_openai_attachments_for_file(file_info)
+					attachments.extend(file_attachments)
+
+				current_msg["attachments"] = attachments
+
+				# Update message content to mention the files are available
+				file_names = [f["file_name"] for f in uploaded_files]
+
+				# Try to extract content from files and include it in the message
+				file_contents = []
+				for file_info in uploaded_files:
+					try:
+						# Get file content using OpenAI API
+						client = get_open_ai_client()
+
+						file_content = client.files.content(file_info["file_id"])
+						content_bytes = file_content.read()
+
+						# Try to decode as text for text files
+						file_extension = file_info["file_name"].split(".")[-1].lower()
+						if file_extension in ["txt", "md", "json", "csv"]:
+							try:
+								content_text = content_bytes.decode('utf-8')
+								file_contents.append(f"Content of {file_info['file_name']}:\n{content_text[:2000]}{'...' if len(content_text) > 2000 else ''}")
+							except:
+								file_contents.append(f"File {file_info['file_name']} uploaded (binary content)")
+						else:
+							file_contents.append(f"File {file_info['file_name']} uploaded and available for analysis")
+					except Exception as e:
+						frappe.log_error(f"Error extracting file content: {str(e)}", "File Content Extraction")
+						file_contents.append(f"File {file_info['file_name']} uploaded")
+
+				if file_contents:
+					current_msg["content"] = f"{message}\n\n" + "\n\n".join(file_contents)
+				else:
+					current_msg["content"] = f"{message}\n\n[The files {', '.join(file_names)} have been uploaded and are available for analysis.]"
+
+				full_input = [current_msg]
+
+			# Add file context if present (for local analysis tool)
+			elif has_files_in_conversation:
 				files = list(manager.file_handler.conversation_files.values())
 				if len(files) == 1:
 					file_name = files[0]["file_name"]
@@ -537,7 +678,9 @@ async def handle_ai_request_async(
 					file_names = [f["file_name"] for f in files]
 					message = f"{message}\n\n[IMPORTANT: The user has uploaded files in this conversation. Available files: {', '.join(file_names)}. Use the 'analyze_conversation_file' tool to analyze the relevant file(s) based on the user's question.]"
 
-			full_input = message
+				full_input = message
+			else:
+				full_input = message
 
 		# Context for the agent
 		context = {
@@ -555,6 +698,10 @@ async def handle_ai_request_async(
 
 			# Use Runner.run as a static method (not an instance)
 			# Set max_turns to prevent infinite loops
+
+			# Log the input for debugging
+			frappe.log_error(f"Agents SDK Input: {json.dumps(full_input, indent=2)}", "Agents SDK Debug")
+
 			result = await Runner.run(agent, full_input, max_turns=5)
 
 		except (TypeError, openai.NotFoundError) as e:
@@ -804,14 +951,14 @@ async def handle_ai_request_async(
 
 
 def handle_ai_request_sync(
-	bot, message: str, channel_id: str, conversation_history: list = None, file_handler=None
+	bot, message: str, channel_id: str, conversation_history: list = None, file_handler=None, uploaded_files=None
 ):
 	"""Synchronous wrapper for async AI request handling"""
 	loop = asyncio.new_event_loop()
 	asyncio.set_event_loop(loop)
 	try:
 		return loop.run_until_complete(
-			handle_ai_request_async(bot, message, channel_id, conversation_history, file_handler)
+			handle_ai_request_async(bot, message, channel_id, conversation_history, file_handler, uploaded_files)
 		)
 	finally:
 		loop.close()

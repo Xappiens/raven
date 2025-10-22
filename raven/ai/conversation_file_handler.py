@@ -4,6 +4,9 @@ Handler for files uploaded during conversations
 
 import frappe
 import pypdf
+import os
+import tempfile
+import requests
 from agents import FunctionTool
 
 
@@ -13,6 +16,7 @@ class ConversationFileHandler:
 	def __init__(self, channel_id: str):
 		self.channel_id = channel_id
 		self.conversation_files = {}
+		self._temp_files = []  # Track temporary files for cleanup
 
 	def add_conversation_file(self, message):
 		"""Add a file from a message to conversation context"""
@@ -53,6 +57,86 @@ class ConversationFileHandler:
 		file_name = getattr(file_doc, "file_name", "")
 		ext = file_name.lower().split(".")[-1] if "." in file_name else ""
 		return ext
+
+	def _get_file_content_path(self, file_path: str, file_doc=None) -> str:
+		"""
+		Get a local file path for content processing.
+		If the file is in S3, download it to a temporary location.
+		Returns the local path to use for file operations.
+		"""
+		# Check if this is an S3 URL (contains download_file method)
+		if "frappe_s3_attachment.controller.download_file" in file_path:
+			try:
+				# Extract the key from the URL
+				if "?key=" in file_path:
+					key = file_path.split("?key=")[1]
+				else:
+					frappe.log_error(f"Could not extract S3 key from URL: {file_path}", "S3 File Handler")
+					return file_path
+
+				# Get file extension for temp file
+				file_name = getattr(file_doc, "file_name", "temp_file") if file_doc else "temp_file"
+				_, ext = os.path.splitext(file_name)
+
+				# Create temporary file
+				temp_fd, temp_path = tempfile.mkstemp(suffix=ext)
+				self._temp_files.append(temp_path)
+
+				# Download file content using frappe_s3_attachment method
+				try:
+					# Use the download_file method from frappe_s3_attachment
+					from frappe_s3_attachment.controller import download_file
+
+					# Call the download method with the key
+					file_content = download_file(key=key)
+
+					# Write to temporary file
+					with os.fdopen(temp_fd, 'wb') as tmp_file:
+						if isinstance(file_content, str):
+							tmp_file.write(file_content.encode('utf-8'))
+						else:
+							tmp_file.write(file_content)
+
+					return temp_path
+
+				except Exception as e:
+					# Fallback: try to get content from file doc
+					if file_doc:
+						try:
+							content = file_doc.get_content()
+							with os.fdopen(temp_fd, 'wb') as tmp_file:
+								tmp_file.write(content)
+							return temp_path
+						except Exception as e2:
+							frappe.log_error(f"Failed to get file content: {str(e2)}", "S3 File Handler")
+
+					# Clean up temp file if we couldn't write to it
+					try:
+						os.close(temp_fd)
+						os.unlink(temp_path)
+						self._temp_files.remove(temp_path)
+					except:
+						pass
+
+					frappe.log_error(f"Failed to download S3 file: {str(e)}", "S3 File Handler")
+					return file_path
+
+			except Exception as e:
+				frappe.log_error(f"Error handling S3 file: {str(e)}", "S3 File Handler")
+				return file_path
+
+		# For local files, return as-is
+		return file_path
+
+	def cleanup_temp_files(self):
+		"""Clean up any temporary files created during processing"""
+		for temp_path in self._temp_files:
+			try:
+				if os.path.exists(temp_path):
+					os.unlink(temp_path)
+			except Exception as e:
+				frappe.log_error(f"Failed to cleanup temp file {temp_path}: {str(e)}", "S3 File Handler")
+		self._temp_files = []
 
 	def create_file_analysis_tool(self) -> FunctionTool | None:
 		"""Create a tool to analyze files in current conversation"""
@@ -95,17 +179,34 @@ class ConversationFileHandler:
 					file_path = file_info["file_path"]
 					file_type = file_info["file_type"]
 
+					# Get the actual file path (download from S3 if needed)
+					try:
+						# Try to get the file doc for better S3 handling
+						file_doc = None
+						try:
+							file_doc = frappe.get_doc("File", {"file_url": file_path})
+						except:
+							pass
+
+						actual_file_path = self._get_file_content_path(file_path, file_doc)
+					except Exception as e:
+						frappe.log_error(f"Error getting file content path: {str(e)}", "File Analysis")
+						actual_file_path = file_path
+
 					# Extract content based on file type
 					content = ""
 					if file_type == "pdf":
-						content = self._extract_pdf_content(file_path)
+						content = self._extract_pdf_content(actual_file_path)
 					elif file_type in ["txt", "md", "json"]:
-						with open(file_path, encoding="utf-8") as f:
-							content = f.read()
+						try:
+							with open(actual_file_path, encoding="utf-8") as f:
+								content = f.read()
+						except Exception as e:
+							content = f"Error reading file: {str(e)}"
 					elif file_type in ["jpg", "jpeg", "png", "gif"]:
 						content = f"[Image file: {file_info['file_name']}]"
 					elif file_type in ["xlsx", "xls", "csv"]:
-						content = self._convert_spreadsheet_to_markdown(file_path, file_type)
+						content = self._convert_spreadsheet_to_markdown(actual_file_path, file_type)
 					else:
 						content = f"[File type {file_type}: {file_info['file_name']}]"
 
@@ -144,6 +245,10 @@ class ConversationFileHandler:
 					"Conversation File Analysis Error",
 				)
 				return {"success": False, "error": str(e), "error_type": type(e).__name__}
+
+			finally:
+				# Clean up temporary files
+				self.cleanup_temp_files()
 
 		async def on_invoke_tool_wrapper(ctx, json_str: str) -> dict:
 			"""Wrapper to match SDK's expected signature"""

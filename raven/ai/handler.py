@@ -43,10 +43,10 @@ def stream_response(ai_thread_id: str, bot, channel_id: str):
 				for tool in details.tool_calls:
 					if tool.type == "code_interpreter":
 						self.publish_event("Running code...")
-				if tool.type == "file_search":
-					self.publish_event("Searching file contents...")
-		else:
-			self.publish_event("atu AI está pensando...")
+					elif tool.type == "file_search":
+						self.publish_event("Searching file contents...")
+			else:
+				self.publish_event("atu AI está pensando...")
 
 		@override
 		def on_text_done(self, text: Text):

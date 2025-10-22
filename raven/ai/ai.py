@@ -352,6 +352,8 @@ def process_message_with_agent(
 				file_handler.add_conversation_file(recent_file)
 
 	# Prepare the message content
+	uploaded_files = []  # Track files uploaded to OpenAI
+
 	if message.message_type in ["File", "Image"]:
 		# Add file to conversation context
 		file_handler.add_conversation_file(message)
@@ -361,21 +363,45 @@ def process_message_with_agent(
 		if not message.text and not message.content:
 			return {"success": True, "response": None}
 
-		# For now, we'll include file information in the text
-		# In the future, we can enhance this to use multimodal capabilities
+		# Upload file to OpenAI for Agents SDK
 		if "fid" in message.file:
 			file_url = message.file.split("?fid=")[0]
 		else:
 			file_url = message.file
 
-		if message.message_type == "File":
-			content = f"[User uploaded a file: {file_url}]"
-			if message.text or message.content:
-				content += f"\n{message.text or message.content}"
-		else:
-			content = f"[User uploaded an image: {file_url}]"
-			if message.text or message.content:
-				content += f"\n{message.text or message.content}"
+		try:
+			# Upload file to OpenAI so the agent can access it
+			from raven.ai.ai import get_open_ai_client
+			client = get_open_ai_client()
+
+			openai_file = create_file_in_openai(file_url, message.message_type, client)
+			uploaded_files.append({
+				"file_id": openai_file.id,
+				"file_name": getattr(frappe.get_doc("File", {"file_url": file_url}), "file_name", "file"),
+				"file_type": message.message_type
+			})
+
+			# Include file information with OpenAI file ID
+			if message.message_type == "File":
+				content = f"[User uploaded a file (OpenAI File ID: {openai_file.id}): {uploaded_files[0]['file_name']}]"
+				if message.text or message.content:
+					content += f"\n{message.text or message.content}"
+			else:
+				content = f"[User uploaded an image (OpenAI File ID: {openai_file.id}): {uploaded_files[0]['file_name']}]"
+				if message.text or message.content:
+					content += f"\n{message.text or message.content}"
+
+		except Exception as e:
+			frappe.log_error(f"Failed to upload file to OpenAI for Agents SDK: {str(e)}", "Agents SDK File Upload")
+			# Fallback to URL-based approach
+			if message.message_type == "File":
+				content = f"[User uploaded a file: {file_url}]"
+				if message.text or message.content:
+					content += f"\n{message.text or message.content}"
+			else:
+				content = f"[User uploaded an image: {file_url}]"
+				if message.text or message.content:
+					content += f"\n{message.text or message.content}"
 	else:
 		content = message.text or message.content or ""
 
@@ -384,7 +410,24 @@ def process_message_with_agent(
 			file_url = recent_file_message.file
 			if "fid" in file_url:
 				file_url = file_url.split("?fid=")[0]
-			file_prefix = f"[User uploaded a {'file' if recent_file_message.message_type == 'File' else 'image'}: {file_url}]\n"
+
+			# Try to upload recent file to OpenAI as well
+			try:
+				from raven.ai.ai import get_open_ai_client
+				client = get_open_ai_client()
+
+				openai_file = create_file_in_openai(file_url, recent_file_message.message_type, client)
+				uploaded_files.append({
+					"file_id": openai_file.id,
+					"file_name": getattr(frappe.get_doc("File", {"file_url": file_url}), "file_name", "file"),
+					"file_type": recent_file_message.message_type
+				})
+
+				file_prefix = f"[User uploaded a {'file' if recent_file_message.message_type == 'File' else 'image'} (OpenAI File ID: {openai_file.id}): {uploaded_files[-1]['file_name']}]\n"
+			except Exception as e:
+				frappe.log_error(f"Failed to upload recent file to OpenAI: {str(e)}", "Agents SDK File Upload")
+				file_prefix = f"[User uploaded a {'file' if recent_file_message.message_type == 'File' else 'image'}: {file_url}]\n"
+
 			content = file_prefix + content
 
 	# Get conversation history if this is an existing thread
@@ -438,6 +481,7 @@ def process_message_with_agent(
 			channel_id=channel_id,
 			conversation_history=conversation_history,
 			file_handler=file_handler,
+			uploaded_files=uploaded_files,  # Pass uploaded files info
 		)
 
 		if response["success"]:
@@ -514,9 +558,29 @@ def create_file_in_openai(file_url: str, message_type: str, client):
 	file_doc = frappe.get_doc("File", {"file_url": file_url})
 	file_path = file_doc.get_full_path()
 
-	file = client.files.create(
-		file=open(file_path, "rb"), purpose="assistants" if message_type == "File" else "vision"
-	)
+	# Handle S3 files by getting content directly
+	if "frappe_s3_attachment.controller.download_file" in file_path:
+		try:
+			# For S3 files, get content directly from file doc
+			file_content = file_doc.get_content()
+			file_name = getattr(file_doc, "file_name", "file")
+
+			# Create a file-like object from the content
+			import io
+			file_obj = io.BytesIO(file_content)
+			file_obj.name = file_name  # Set name attribute for OpenAI
+
+			file = client.files.create(
+				file=file_obj, purpose="assistants" if message_type == "File" else "vision"
+			)
+		except Exception as e:
+			frappe.log_error(f"Error uploading S3 file to OpenAI: {str(e)}", "OpenAI File Upload")
+			raise e
+	else:
+		# For local files, use the original method
+		file = client.files.create(
+			file=open(file_path, "rb"), purpose="assistants" if message_type == "File" else "vision"
+		)
 
 	return file
 
